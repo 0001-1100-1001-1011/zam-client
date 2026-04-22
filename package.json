@@ -1,0 +1,21 @@
+{
+  "name": "zam-client",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/0001-1100-1001-1011/zam-client.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/0001-1100-1001-1011/zam-client/issues"
+  },
+  "homepage": "https://github.com/0001-1100-1001-1011/zam-client#readme"
+}
