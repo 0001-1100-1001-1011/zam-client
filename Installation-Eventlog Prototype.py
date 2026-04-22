@@ -6,8 +6,8 @@ import win32evtlogutil
 from datetime import datetime
 from pathlib import Path
 
-# Kategorie Application, System, Security, Installation etc.
-LOG_NAME = "Application"
+# Category Application, Security, System etc.
+LOG_NAME = "Installation"
 MAX_LOGS = 20 # Numer of last created logs to read
 
 
@@ -53,7 +53,7 @@ def main():
     text     = format_events(events)
 
     date_str = datetime.now().strftime("%d-%m-%Y_%H-%M")
-    out_path = Path.home() / "Desktop" / f"EventLog_{LOG_NAME}_{date_str}.txt" #Change Path to appropriate Localtion
+    out_path = Path.home() / "Desktop" / f"{LOG_NAME}_EventLog_{date_str}.txt" #Change Path to appropriate Localtion
     out_path.write_text(text, encoding="utf-8")
 
     print(f"Gespeichert unter:\n{out_path}")
