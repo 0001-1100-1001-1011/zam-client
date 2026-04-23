@@ -1,68 +1,59 @@
+# please use
 # pip install pywin32
+# if not installed before
+# only works as admin, need to use as elevated user or with task scheduler
 
 import win32evtlog
 import win32evtlogutil
+import json
 from datetime import datetime
 from pathlib import Path
-import xml.etree.ElementTree as ET
 
 LOG_NAME = "Security"
-MAX_LOGS = 100
+MAX_LOGS = 20
 
-def extract_security_fields(event):
-    """Extrahiert Security-EventData aus XML."""
-    try:
-        xml = win32evtlog.EvtRender(event, win32evtlog.EvtRenderEventXml)
-        root = ET.fromstring(xml)
 
-        data = {}
-        for d in root.findall(".//EventData/Data"):
-            name = d.attrib.get("Name", "Unknown")
-            data[name] = d.text
-
-        return data
-    except:
-        return {}
-
-def main():
-    handle = win32evtlog.OpenEventLog(None, LOG_NAME)
+def fetch_events(log_name: str, count: int) -> list[dict]:
+    handle = win32evtlog.OpenEventLog(None, log_name)
     flags = win32evtlog.EVENTLOG_BACKWARDS_READ | win32evtlog.EVENTLOG_SEQUENTIAL_READ
 
     events = []
-
-    while len(events) < MAX_LOGS:
+    while len(events) < count:
         batch = win32evtlog.ReadEventLog(handle, flags, 0)
         if not batch:
             break
 
         for e in batch:
-            xml_data = extract_security_fields(e)
-            msg = win32evtlogutil.SafeFormatMessage(e, LOG_NAME)
-
             events.append({
-                "Time": e.TimeGenerated.Format(),
+                "TimeCreated": e.TimeGenerated.Format(),
                 "EventID": e.EventID & 0xFFFF,
+                "Level": e.EventType,
                 "Source": e.SourceName,
-                "Message": msg.strip(),
-                **xml_data
+                "Message": win32evtlogutil.SafeFormatMessage(e, log_name),
             })
 
-            if len(events) >= MAX_LOGS:
+            if len(events) >= count:
                 break
 
     win32evtlog.CloseEventLog(handle)
+    return events
 
-    lines = []
-    for ev in events:
-        for k, v in ev.items():
-            lines.append(f"{k:20}: {v}")
-        lines.append("-" * 90)
 
-    date = datetime.now().strftime("%d-%m-%Y_%H-%M")
-    path = Path.home() / "Desktop" / f"SecurityLog_{date}.txt"
-    path.write_text("\n".join(lines), encoding="utf-8")
+def save_json(events: list[dict], log_name: str):
+    date_str = datetime.now().strftime("%d-%m-%Y_%H-%M")
+    out_path = Path.home() / "Desktop" / f"{log_name}_EventLog_{date_str}.json"
 
-    print(f"Gespeichert unter:\n{path}")
+    with out_path.open("w", encoding="utf-8") as f:
+        json.dump(events, f, indent=4, ensure_ascii=False)
+
+    print(f"JSON gespeichert unter:\n{out_path}")
+
+
+def main():
+    print(f"Exportiere die letzten {MAX_LOGS} Events aus '{LOG_NAME}' ...")
+    events = fetch_events(LOG_NAME, MAX_LOGS)
+    save_json(events, LOG_NAME)
+
 
 if __name__ == "__main__":
     main()
