@@ -1,4 +1,7 @@
+# please use
 # pip install pywin32
+# if not installed before
+# only works as admin, need to use as elevated user or with task scheduler
 
 import win32evtlog
 import win32evtlogutil

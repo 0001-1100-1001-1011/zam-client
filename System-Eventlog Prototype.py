@@ -1,4 +1,6 @@
+# please use
 # pip install pywin32
+# if not installed before
 
 import win32evtlog
 import win32evtlogutil
