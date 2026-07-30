@@ -1,4 +1,3 @@
-
 #ZAM Monitoring Agent
 #Start and install: pip install pywin32 && python agent.py
 
@@ -10,6 +9,7 @@ import urllib.request
 import urllib.error
 from datetime import datetime
 from pathlib import Path
+import time
 import win32evtlog
 import win32evtlogutil
 import win32con
@@ -19,8 +19,7 @@ import pywintypes
 SERVER_URL      = "http://localhost:4000/api/logs"
 INTERVAL_SEC    = 10
 INITIAL_LOGS    = 5
-MAX_LOGS        = 20
-
+MAX_LOGS        = 100
 #Save lastrecord file
 Last_RecordFile = Path(__file__).parent / "last_record.json"
  
@@ -31,14 +30,16 @@ CHANNELS  = ["Application", "System", "Security"]
 
 #read lastrecord from file
 def load_state():
+    global last_record
     if Last_RecordFile.exists():
         try:
             with open(Last_RecordFile, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            return {ch: data.get(ch) for ch in CHANNELS}
+            last_record = {ch: data.get(ch) for ch in CHANNELS}
+            return
         except (json.JSONDecodeError, OSError) as e:
             print(f"[WARN] Fehler beim Laden der letzten Record-Nummern: {e}, starte mit None")
-        return {ch: None for ch in CHANNELS}
+    last_record = {ch: None for ch in CHANNELS}
 
 def save_state():
     try:
@@ -136,16 +137,21 @@ def main():
     print(f"Client-ID : {CLIENT_ID}")
     print(f"Hostname  : {HOSTNAME}")
     print(f"Server    : {SERVER_URL}")
-    print(f"Interval  : {INTERVAL_SEC}s")
+    print(f"Intervall : {INTERVAL_SEC}")
     print(f"Kanäle    : {', '.join(CHANNELS)}")
  
+    load_state()
+
     try:
         already_initialized = any(v is not None for v in last_record.values())
  
         if already_initialized:
-            print("Vorheriger Zustand gefunden, initialer Push wird übersprungen.")
+            print("Vorheriger Zustand gefunden, lese neue Events seit letztem Lauf.")
             for channel in CHANNELS:
                 print(f"  {channel}: fortgesetzt ab Record #{last_record[channel]}")
+                for ev in reversed(read_events(channel)):
+                    push_log(ev)
+            save_state()
         else:
             print("Starte Log-Lesen")
             for channel in CHANNELS:
@@ -170,6 +176,7 @@ def main():
     except KeyboardInterrupt:
         print("\n[Agent gestoppt]")
  
- 
 if __name__ == "__main__":
-    main()
+        #while True:
+         main()
+         #time.sleep(INTERVAL_SEC) #use only without Task Scheduler
