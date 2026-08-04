@@ -14,6 +14,10 @@ import win32evtlog
 import win32evtlogutil
 import win32con
 import pywintypes
+import hmac
+import hashlib
+
+SECRET = bytes.fromhex("PLS Secret here")
  
  #Endpoint Definition and Intervalls
 SERVER_URL      = "http://localhost:4000/api/logs"
@@ -113,14 +117,24 @@ def read_events(channel):
  
  #Convert to JSON-String and Header Post-Request
 def push_log(log):
-    payload = json.dumps(log).encode("utf-8")
+    # JSON stabil serialisieren
+    payload_str = json.dumps(log, separators=(",", ":"))
+    payload = payload_str.encode("utf-8")
+
+    # HMAC-SHA256 Signatur erzeugen
+    signature = hmac.new(SECRET, payload, hashlib.sha256).hexdigest()
+
     req = urllib.request.Request(
         SERVER_URL,
         data=payload,
-        headers={"Content-Type": "application/json", "X-Client-Id": CLIENT_ID},
+        headers={
+            "Content-Type": "application/json",
+            "X-Client-Id": CLIENT_ID,
+            "X-Signature": signature,
+        },
         method="POST",
     )
-    #Send Request, 5 second timeout and Console-formatting
+
     try:
         with urllib.request.urlopen(req, timeout=5) as resp:
             if resp.status == 200:
