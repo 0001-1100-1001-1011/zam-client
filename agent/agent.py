@@ -1,7 +1,6 @@
-#ZAM Monitoring Agent
-#Start and install: pip install pywin32 && python agent.py
+# ZAM Monitoring Agent
+# Start: pip install pywin32 && python agent.py
 
-#Imports
 import hashlib
 import json
 import socket
@@ -16,23 +15,27 @@ import win32con
 import pywintypes
 import hmac
 import hashlib
+import os
+import winreg
 
-SECRET = bytes.fromhex("PLS Secret here")
- 
- #Endpoint Definition and Intervalls
-SERVER_URL      = "http://localhost:4000/api/logs"
+SECRET = bytes.fromhex("91ebc4d11def522d9180373a032b50bd212fe653794337bbe547a39fa238d41c")
+
+# Endpoints
+SERVER_URL   = "http://localhost:3000/api/logs"
+SOFTWARE_URL = "http://localhost:3000/api/software"
+
 INTERVAL_SEC    = 10
 INITIAL_LOGS    = 5
 MAX_LOGS        = 100
-#Save lastrecord file
+
 Last_RecordFile = Path(__file__).parent / "last_record.json"
- 
- #Encode Hostname as MD5
+#Software_RecordFile = Path(__file__).parent / "software_record.json"
+
 HOSTNAME  = socket.gethostname()
 CLIENT_ID = hashlib.md5(HOSTNAME.encode()).hexdigest()[:8]
 CHANNELS  = ["Application", "System", "Security"]
 
-#read lastrecord from file
+# Load last record state
 def load_state():
     global last_record
     if Last_RecordFile.exists():
@@ -41,21 +44,20 @@ def load_state():
                 data = json.load(f)
             last_record = {ch: data.get(ch) for ch in CHANNELS}
             return
-        except (json.JSONDecodeError, OSError) as e:
-            print(f"[WARN] Fehler beim Laden der letzten Record-Nummern: {e}, starte mit None")
+        except Exception as e:
+            print(f"[WARN] Fehler beim Laden: {e}")
     last_record = {ch: None for ch in CHANNELS}
 
 def save_state():
     try:
         with open(Last_RecordFile, "w", encoding="utf-8") as f:
             json.dump(last_record, f)
-    except OSError as e:
-        print(f"[WARN] Fehler beim Speichern der letzten Record-Nummern: {e}")
+    except Exception as e:
+        print(f"[WARN] Fehler beim Speichern: {e}")
 
- #last Record Number check
 last_record = {ch: None for ch in CHANNELS}
 
-#Mapping Windows Event-Types
+# Mapping Windows Event Types
 LEVEL_MAP = {
     win32con.EVENTLOG_INFORMATION_TYPE: "INFO",
     win32con.EVENTLOG_WARNING_TYPE:     "WARNING",
@@ -63,37 +65,41 @@ LEVEL_MAP = {
     win32con.EVENTLOG_AUDIT_SUCCESS:    "INFO",
     win32con.EVENTLOG_AUDIT_FAILURE:    "WARNING",
 }
- #Mapping to Info if Unknwown Type is found
+
 def map_level(event_type):
     return LEVEL_MAP.get(event_type, "INFO")
- 
- #Getting text from Windows-Message-DLLs
+
+# Convert Windows Event to JSON
 def event_to_dict(ev, channel):
     try:
         message = win32evtlogutil.SafeFormatMessage(ev, channel)
     except Exception:
         message = " ".join(str(s) for s in (ev.StringInserts or [])) or "—"
- 
+
     try:
         ts = datetime.fromtimestamp(int(ev.TimeGenerated.timestamp())).isoformat()
     except Exception:
         ts = datetime.now().isoformat()
- 
- #Create template for JSON
+
+    keyword = ""
+    if ev.EventType == win32con.EVENTLOG_AUDIT_FAILURE:
+        keyword = "Überwachung gescheitert"
+    elif ev.EventType == win32con.EVENTLOG_AUDIT_SUCCESS:
+        keyword = "Überwachung erfolgreich"
+
     return {
-        "clientId":     CLIENT_ID,
-        "hostname":     HOSTNAME,
-        "timestamp":    ts,
-        "level":        map_level(ev.EventType),
-        "source":       channel,
-        "event_source":  str(ev.SourceName),
-        "eventId":      ev.EventID & 0xFFFF,
-        "keyword":      "Überwachung gescheitert" if ev.EventType == win32con.EVENTLOG_AUDIT_FAILURE
-                        else ("Überwachung erfolgreich" if ev.EventType == win32con.EVENTLOG_AUDIT_SUCCESS else ""),
-        "message":      message.strip().replace("\r\n", " ").replace("\n", " "),
+        "client_id": CLIENT_ID,
+        "hostname": HOSTNAME,
+        "time_created": ts,
+        "level": map_level(ev.EventType),
+        "source": channel,
+        "event_source": str(ev.SourceName),
+        "event_id": ev.EventID & 0xFFFF,
+        "keyword": keyword,
+        "message": message.strip().replace("\r\n", " ").replace("\n", " "),
     }
- 
- #Open Logs on Localhost and read Logs latest first
+
+# Read Windows Events
 def read_events(channel):
     events = []
     try:
@@ -101,64 +107,107 @@ def read_events(channel):
         flags  = win32evtlog.EVENTLOG_BACKWARDS_READ | win32evtlog.EVENTLOG_SEQUENTIAL_READ
         raw    = win32evtlog.ReadEventLog(handle, flags, 0)
         win32evtlog.CloseEventLog(handle)
- #read MAX_LOGS and skipt duplicates
+
         for ev in raw[:MAX_LOGS]:
             if last_record[channel] is not None and ev.RecordNumber <= last_record[channel]:
                 continue
             events.append(event_to_dict(ev, channel))
- 
+
         if raw:
             last_record[channel] = raw[0].RecordNumber
- #Warning if not Admin
+
     except pywintypes.error as e:
         print(f"[WARN] {channel}: {e}")
- 
-    return events
- 
- #Convert to JSON-String and Header Post-Request
-def push_log(log):
-    # JSON stabil serialisieren
-    payload_str = json.dumps(log, separators=(",", ":"))
-    payload = payload_str.encode("utf-8")
 
-    # HMAC-SHA256 Signatur erzeugen
+    return events
+
+#read installed Software
+def get_installed_software():
+    software = []
+    seen = set()
+
+    registry_locations = [
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"),
+        (winreg.HKEY_CURRENT_USER,  r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+    ]
+
+    for hive, path in registry_locations:
+        try:
+            with winreg.OpenKey(hive, path) as key:
+                for i in range(winreg.QueryInfoKey(key)[0]):
+                    subkey_name = winreg.EnumKey(key, i)
+                    try:
+                        with winreg.OpenKey(key, subkey_name) as subkey:
+                            name = winreg.QueryValueEx(subkey, "DisplayName")[0]
+                            try:
+                                version = winreg.QueryValueEx(subkey, "DisplayVersion")[0]
+                            except FileNotFoundError:
+                                version = ""
+
+                            if not name or name in seen:
+                                continue
+                            seen.add(name)
+                            software.append({"name": name, "version": version})
+                    except Exception:
+                        continue
+        except Exception:
+            continue
+
+    return sorted(software, key=lambda s: s["name"].lower())
+
+# Send signed JSON payload
+def send_signed(url, body):
+    payload = json.dumps(body, separators=(",", ":")).encode("utf-8")
     signature = hmac.new(SECRET, payload, hashlib.sha256).hexdigest()
 
     req = urllib.request.Request(
-        SERVER_URL,
+        url,
         data=payload,
         headers={
             "Content-Type": "application/json",
-            "X-Client-Id": CLIENT_ID,
             "X-Signature": signature,
         },
         method="POST",
     )
-
     try:
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            if resp.status == 200:
-                ts = log["timestamp"][11:19]
-                print(f"[{ts}]  {log['level']:<7}  {log['source']:<12}  {log['event_source']:<30}  EventId:{log['eventId']}")
-                return True
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return resp.status == 200
     except urllib.error.URLError as e:
-        print(f"[ERROR] {e.reason}")
-    return False
- 
- #Agent start Info
+        print(f"[ERROR] {url}: {e.reason}")
+        return False
+
+def push_log(log):
+    ok = send_signed(SERVER_URL, log)
+    if ok:
+        ts = log["time_created"][11:19]
+        print(f"[{ts}]  {log['level']:<7}  {log['source']:<12}  {log['event_source']:<30}  EventId:{log['event_id']}")
+    return ok
+
+def push_software():
+    software = get_installed_software()
+
+    body = {
+        "hostname": HOSTNAME,
+        "software": software,
+    }
+    ok = send_signed(SOFTWARE_URL, body)
+    if ok:
+        print(f"[Software] {len(software)} Programme gemeldet")
+    return ok
+
 def main():
     print("ZAM Monitoring Agent")
-    print(f"Client-ID : {CLIENT_ID}")
     print(f"Hostname  : {HOSTNAME}")
     print(f"Server    : {SERVER_URL}")
     print(f"Intervall : {INTERVAL_SEC}")
     print(f"Kanäle    : {', '.join(CHANNELS)}")
- 
+
     load_state()
 
     try:
         already_initialized = any(v is not None for v in last_record.values())
- 
+
         if already_initialized:
             print("Vorheriger Zustand gefunden, lese neue Events seit letztem Lauf.")
             for channel in CHANNELS:
@@ -175,7 +224,6 @@ def main():
                     raw = win32evtlog.ReadEventLog(handle, flags, 0)
                     win32evtlog.CloseEventLog(handle)
 
-                    # Push last 5 instantly
                     for ev in reversed(raw[:INITIAL_LOGS]):
                         push_log(event_to_dict(ev, channel))
 
@@ -183,14 +231,17 @@ def main():
                         last_record[channel] = raw[0].RecordNumber
                         save_state()
                         print(f"  {channel}: Start bei Record #{last_record[channel]}")
-                except pywintypes.error as e:
+                except Exception as e:
                     print(f"  {channel}: Zugriff verweigert ({e})")
                     for ev in reversed(read_events(channel)):
                         push_log(ev)
+
+        push_software()
+
     except KeyboardInterrupt:
         print("\n[Agent gestoppt]")
- 
+
 if __name__ == "__main__":
-        #while True:
-         main()
-         #time.sleep(INTERVAL_SEC) #use only without Task Scheduler
+    while True:
+        main()
+        time.sleep(INTERVAL_SEC)
