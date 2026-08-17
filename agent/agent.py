@@ -4,6 +4,9 @@
 import hashlib
 import json
 import socket
+import platform
+import shutil
+import subprocess
 import urllib.request
 import urllib.error
 from datetime import datetime
@@ -12,17 +15,18 @@ import time
 import win32evtlog
 import win32evtlogutil
 import win32con
+import win32api
 import pywintypes
 import hmac
 import hashlib
-import os
 import winreg
 
-SECRET = bytes.fromhex("91ebc4d11def522d9180373a032b50bd212fe653794337bbe547a39fa238d41c")
+SECRET = bytes.fromhex("")
 
 # Endpoints
 SERVER_URL   = "http://localhost:3000/api/logs"
 SOFTWARE_URL = "http://localhost:3000/api/software"
+HOSTS_URL    = "http://localhost:3000/api/hosts"
 
 INTERVAL_SEC    = 10
 INITIAL_LOGS    = 5
@@ -156,6 +160,87 @@ def get_installed_software():
 
     return sorted(software, key=lambda s: s["name"].lower())
 
+def get_hardware_info():
+    info = {
+        "hostname":          HOSTNAME,
+        "ip_address":        "",
+        "cpu_model":         "",
+        "ram_size":          0,
+        "gpu_model":         "",
+        "storage_size":      0,
+        "operating_system":  "",
+    }
+
+    try:
+        info["ip_address"] = socket.gethostbyname(socket.gethostname())
+    except socket.error as e:
+        print(f"[WARN] IP-Adresse konnte nicht ermittelt werden: {e}")
+
+    try:
+        info["operating_system"] = f"{platform.system()} {platform.release()}"
+    except Exception as e:
+        print(f"[WARN] OS-Info konnte nicht ermittelt werden: {e}")
+
+    try:
+        result = subprocess.run(
+        ["wmic", "cpu", "get", "name"],
+        capture_output=True, text=True, timeout=5, creationflags=subprocess.CREATE_NO_WINDOW
+    )
+        lines = [l.strip() for l in result.stdout.splitlines() if l.strip() and l.strip() != "Name"]
+        info["cpu_model"] = lines[0] if lines else platform.processor()
+    except Exception as e:
+        print(f"[WARN] CPU-Name konnte nicht ermittelt werden: {e}")
+
+
+    try:
+        mem = win32api.GlobalMemoryStatusEx()
+        info["ram_size"] = round(mem["TotalPhys"] / (1024 ** 3))
+    except Exception as e:
+        print(f"[WARN] RAM-Info konnte nicht ermittelt werden: {e}")
+
+    try:
+        total, _, _ = shutil.disk_usage("C:\\")
+        info["storage_size"] = round(total / (1024 ** 3))
+    except Exception as e:
+        print(f"[WARN] Speicherplatz-Info konnte nicht ermittelt werden: {e}")
+
+    info["gpu_model"] = get_gpu_name()
+
+
+    return info
+
+def get_gpu_name():
+    try:
+        result = subprocess.run(
+            ["wmic", "path", "win32_VideoController", "get", "name"],
+            capture_output=True, text=True, timeout=5, creationflags=subprocess.CREATE_NO_WINDOW
+        )
+        lines = [l.strip() for l in result.stdout.splitlines() if l.strip() and l.strip() != "Name"]
+
+        FAKE_GPUS = [
+            "virtual",
+            "basic",
+            "microsoft",
+            "vmware",
+            "display",
+            "remote"
+        ]
+
+        real_gpus = []
+        for gpu in lines:
+            lower = gpu.lower()
+            if not any(bad in lower for bad in FAKE_GPUS):
+                real_gpus.append(gpu)
+
+        if real_gpus:
+            return real_gpus[0]
+
+        return lines[0] if lines else "unbekannt"
+
+    except Exception as e:
+        print(f"[WARN] GPU-Info konnte nicht ermittelt werden: {e}")
+        return "unbekannt"
+
 # Send signed JSON payload
 def send_signed(url, body):
     payload = json.dumps(body, separators=(",", ":")).encode("utf-8")
@@ -194,6 +279,13 @@ def push_software():
     ok = send_signed(SOFTWARE_URL, body)
     if ok:
         print(f"[Software] {len(software)} Programme gemeldet")
+    return ok
+
+def push_hosts():
+    hw = get_hardware_info()
+    ok = send_signed(HOSTS_URL, hw)
+    if ok:
+        print(f"[Hosts] Hardware-Infos gemeldet ({HOSTNAME}, {hw['ip_address']})")
     return ok
 
 def main():
@@ -237,6 +329,7 @@ def main():
                         push_log(ev)
 
         push_software()
+        push_hosts()
 
     except KeyboardInterrupt:
         print("\n[Agent gestoppt]")
