@@ -24,9 +24,9 @@ import winreg
 SECRET = bytes.fromhex("")
 
 # Endpoints
-SERVER_URL   = "http://localhost:3000/api/logs"
-SOFTWARE_URL = "http://localhost:3000/api/software"
-HOSTS_URL    = "http://localhost:3000/api/hosts"
+SERVER_URL   = "http://10.72.100.25:3000/api/logs"
+SOFTWARE_URL = "http://10.72.100.25:3000/api/softwares"
+HOSTS_URL    = "http://10.72.100.25:3000/api/hosts"
 
 INTERVAL_SEC    = 10
 INITIAL_LOGS    = 5
