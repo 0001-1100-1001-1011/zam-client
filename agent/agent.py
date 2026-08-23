@@ -160,6 +160,17 @@ def get_installed_software():
 
     return sorted(software, key=lambda s: s["name"].lower())
 
+def get_local_ip():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+    except Exception:
+        ip = "127.0.0.1"
+    finally:
+        s.close()
+    return ip
+
 def get_hardware_info():
     info = {
         "hostname":          HOSTNAME,
@@ -172,8 +183,8 @@ def get_hardware_info():
     }
 
     try:
-        info["ip_address"] = socket.gethostbyname(socket.gethostname())
-    except socket.error as e:
+        info["ip_address"] = get_local_ip()
+    except Exception as e:
         print(f"[WARN] IP-Adresse konnte nicht ermittelt werden: {e}")
 
     try:
