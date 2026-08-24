@@ -21,12 +21,12 @@ import hmac
 import hashlib
 import winreg
 
-SECRET = bytes.fromhex("")
+SECRET = bytes.fromhex("52edff7a50611ddeb832a1ca9c542ec710409a293b7948c30e190c77eccaf92f")
 
 # Endpoints
-SERVER_URL   = "http://10.72.100.25/api/logs"
-SOFTWARE_URL = "http://10.72.100.25/api/softwares"
-HOSTS_URL    = "http://10.72.100.25/api/hosts"
+SERVER_URL   = "http://localhost:3000/api/logs"
+SOFTWARE_URL = "http://localhost:3000/api/softwares"
+HOSTS_URL    = "http://localhost:3000/api/hosts"
 
 INTERVAL_SEC    = 10
 INITIAL_LOGS    = 5
