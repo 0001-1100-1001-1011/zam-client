@@ -24,9 +24,9 @@ import winreg
 SECRET = bytes.fromhex("")
 
 # Endpoints
-SERVER_URL   = "http://10.72.100.25:3000/api/logs"
-SOFTWARE_URL = "http://10.72.100.25:3000/api/softwares"
-HOSTS_URL    = "http://10.72.100.25:3000/api/hosts"
+SERVER_URL   = "http://10.72.100.25/api/logs"
+SOFTWARE_URL = "http://10.72.100.25/api/softwares"
+HOSTS_URL    = "http://10.72.100.25/api/hosts"
 
 INTERVAL_SEC    = 10
 INITIAL_LOGS    = 5
@@ -294,6 +294,7 @@ def push_software():
 
 def push_hosts():
     hw = get_hardware_info()
+    hw["hmac_key"] = SECRET.hex()
     ok = send_signed(HOSTS_URL, hw)
     if ok:
         print(f"[Hosts] Hardware-Infos gemeldet ({HOSTNAME}, {hw['ip_address']})")
