@@ -1,6 +1,3 @@
-# ZAM Monitoring Agent
-# Start: pip install pywin32 && python agent.py
-
 import hashlib
 import json
 import socket
@@ -18,28 +15,52 @@ import win32con
 import win32api
 import pywintypes
 import hmac
-import hashlib
 import winreg
+import ssl
 
-SECRET = bytes.fromhex("52edff7a50611ddeb832a1ca9c542ec710409a293b7948c30e190c77eccaf92f")
+HMAC_KEY_FILE = Path(r"C:\Zam-Projekt\zam-client\agent\agent.key")
 
-# Endpoints
-SERVER_URL   = "http://localhost:3000/api/logs"
-SOFTWARE_URL = "http://localhost:3000/api/softwares"
-HOSTS_URL    = "http://localhost:3000/api/hosts"
+def load_hmac_key():
+    try:
+        key_hex = HMAC_KEY_FILE.read_text().strip()
+        return bytes.fromhex(key_hex)
+    except Exception:
+        return None
+
+SECRET = load_hmac_key()
+
+SERVER_URL   = "https://10.72.100.25/agent-api/logs"
+SOFTWARE_URL = "https://10.72.100.25/agent-api/softwares"
+HOSTS_URL    = "https://10.72.100.25/agent-api/hosts"
 
 INTERVAL_SEC    = 10
 INITIAL_LOGS    = 5
 MAX_LOGS        = 100
 
 Last_RecordFile = Path(__file__).parent / "last_record.json"
-#Software_RecordFile = Path(__file__).parent / "software_record.json"
 
 HOSTNAME  = socket.gethostname()
-CLIENT_ID = hashlib.md5(HOSTNAME.encode()).hexdigest()[:8]
+CLIENT_ID = hashlib.sha256(HOSTNAME.encode()).hexdigest()[:32]
 CHANNELS  = ["Application", "System", "Security"]
 
-# Load last record state
+CONFIG_FILE = Path(__file__).parent / "certs.json"
+
+def load_config():
+    if CONFIG_FILE.exists():
+        return json.loads(CONFIG_FILE.read_text())
+    return {}
+
+cfg = load_config()
+
+TLS_CERT_FILE = cfg["cert"]
+TLS_KEY_FILE  = cfg["key"]
+TLS_CA_FILE   = cfg["ca"]
+
+def build_ssl_context():
+    ctx = ssl.create_default_context(ssl.Purpose.SERVER_AUTH, cafile=TLS_CA_FILE)
+    ctx.load_cert_chain(certfile=TLS_CERT_FILE, keyfile=TLS_KEY_FILE)
+    return ctx
+
 def load_state():
     global last_record
     if Last_RecordFile.exists():
@@ -48,20 +69,19 @@ def load_state():
                 data = json.load(f)
             last_record = {ch: data.get(ch) for ch in CHANNELS}
             return
-        except Exception as e:
-            print(f"[WARN] Fehler beim Laden: {e}")
+        except Exception:
+            pass
     last_record = {ch: None for ch in CHANNELS}
 
 def save_state():
     try:
         with open(Last_RecordFile, "w", encoding="utf-8") as f:
             json.dump(last_record, f)
-    except Exception as e:
-        print(f"[WARN] Fehler beim Speichern: {e}")
+    except Exception:
+        pass
 
 last_record = {ch: None for ch in CHANNELS}
 
-# Mapping Windows Event Types
 LEVEL_MAP = {
     win32con.EVENTLOG_INFORMATION_TYPE: "INFO",
     win32con.EVENTLOG_WARNING_TYPE:     "WARNING",
@@ -73,7 +93,6 @@ LEVEL_MAP = {
 def map_level(event_type):
     return LEVEL_MAP.get(event_type, "INFO")
 
-# Convert Windows Event to JSON
 def event_to_dict(ev, channel):
     try:
         message = win32evtlogutil.SafeFormatMessage(ev, channel)
@@ -103,7 +122,6 @@ def event_to_dict(ev, channel):
         "message": message.strip().replace("\r\n", " ").replace("\n", " "),
     }
 
-# Read Windows Events
 def read_events(channel):
     events = []
     try:
@@ -120,12 +138,11 @@ def read_events(channel):
         if raw:
             last_record[channel] = raw[0].RecordNumber
 
-    except pywintypes.error as e:
-        print(f"[WARN] {channel}: {e}")
+    except pywintypes.error:
+        pass
 
     return events
 
-#read installed Software
 def get_installed_software():
     software = []
     seen = set()
@@ -143,16 +160,26 @@ def get_installed_software():
                     subkey_name = winreg.EnumKey(key, i)
                     try:
                         with winreg.OpenKey(key, subkey_name) as subkey:
-                            name = winreg.QueryValueEx(subkey, "DisplayName")[0]
+
+                            try:
+                                name = winreg.QueryValueEx(subkey, "DisplayName")[0]
+                            except Exception:
+                                continue
+
+                            if not name or name.strip() == "" or name in seen:
+                                continue
+
                             try:
                                 version = winreg.QueryValueEx(subkey, "DisplayVersion")[0]
                             except FileNotFoundError:
-                                version = ""
+                                version = "unknown"
 
-                            if not name or name in seen:
-                                continue
+                            if not version or version.strip() == "":
+                                version = "unknown"
+
                             seen.add(name)
                             software.append({"name": name, "version": version})
+
                     except Exception:
                         continue
         except Exception:
@@ -184,39 +211,37 @@ def get_hardware_info():
 
     try:
         info["ip_address"] = get_local_ip()
-    except Exception as e:
-        print(f"[WARN] IP-Adresse konnte nicht ermittelt werden: {e}")
+    except Exception:
+        pass
 
     try:
         info["operating_system"] = f"{platform.system()} {platform.release()}"
-    except Exception as e:
-        print(f"[WARN] OS-Info konnte nicht ermittelt werden: {e}")
+    except Exception:
+        pass
 
     try:
         result = subprocess.run(
-        ["wmic", "cpu", "get", "name"],
-        capture_output=True, text=True, timeout=5, creationflags=subprocess.CREATE_NO_WINDOW
-    )
+            ["wmic", "cpu", "get", "name"],
+            capture_output=True, text=True, timeout=5, creationflags=subprocess.CREATE_NO_WINDOW
+        )
         lines = [l.strip() for l in result.stdout.splitlines() if l.strip() and l.strip() != "Name"]
         info["cpu_model"] = lines[0] if lines else platform.processor()
-    except Exception as e:
-        print(f"[WARN] CPU-Name konnte nicht ermittelt werden: {e}")
-
+    except Exception:
+        pass
 
     try:
         mem = win32api.GlobalMemoryStatusEx()
         info["ram_size"] = round(mem["TotalPhys"] / (1024 ** 3))
-    except Exception as e:
-        print(f"[WARN] RAM-Info konnte nicht ermittelt werden: {e}")
+    except Exception:
+        pass
 
     try:
         total, _, _ = shutil.disk_usage("C:\\")
         info["storage_size"] = round(total / (1024 ** 3))
-    except Exception as e:
-        print(f"[WARN] Speicherplatz-Info konnte nicht ermittelt werden: {e}")
+    except Exception:
+        pass
 
     info["gpu_model"] = get_gpu_name()
-
 
     return info
 
@@ -228,14 +253,7 @@ def get_gpu_name():
         )
         lines = [l.strip() for l in result.stdout.splitlines() if l.strip() and l.strip() != "Name"]
 
-        FAKE_GPUS = [
-            "virtual",
-            "basic",
-            "microsoft",
-            "vmware",
-            "display",
-            "remote"
-        ]
+        FAKE_GPUS = ["virtual", "basic", "microsoft", "vmware", "display", "remote"]
 
         real_gpus = []
         for gpu in lines:
@@ -248,12 +266,10 @@ def get_gpu_name():
 
         return lines[0] if lines else "unbekannt"
 
-    except Exception as e:
-        print(f"[WARN] GPU-Info konnte nicht ermittelt werden: {e}")
+    except Exception:
         return "unbekannt"
 
-# Send signed JSON payload
-def send_signed(url, body):
+def send_signed(url, body, retries=3):
     payload = json.dumps(body, separators=(",", ":")).encode("utf-8")
     signature = hmac.new(SECRET, payload, hashlib.sha256).hexdigest()
 
@@ -266,12 +282,25 @@ def send_signed(url, body):
         },
         method="POST",
     )
-    try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            return resp.status == 200
-    except urllib.error.URLError as e:
-        print(f"[ERROR] {url}: {e.reason}")
-        return False
+
+    backoff = 2
+
+    for attempt in range(1, retries + 1):
+        try:
+            ctx = build_ssl_context()
+
+            with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
+                return resp.status == 200
+        except urllib.error.HTTPError as e:
+            error_body = e.read().decode("utf-8", errors="replace")
+            if attempt < retries:
+                time.sleep(backoff)
+                backoff *= 2
+        except Exception as e:
+            if attempt < retries:
+                time.sleep(backoff)
+                backoff *= 2
+    return False
 
 def push_log(log):
     ok = send_signed(SERVER_URL, log)
@@ -282,11 +311,7 @@ def push_log(log):
 
 def push_software():
     software = get_installed_software()
-
-    body = {
-        "hostname": HOSTNAME,
-        "software": software,
-    }
+    body = {"hostname": HOSTNAME, "software": software}
     ok = send_signed(SOFTWARE_URL, body)
     if ok:
         print(f"[Software] {len(software)} Programme gemeldet")
@@ -335,8 +360,7 @@ def main():
                         last_record[channel] = raw[0].RecordNumber
                         save_state()
                         print(f"  {channel}: Start bei Record #{last_record[channel]}")
-                except Exception as e:
-                    print(f"  {channel}: Zugriff verweigert ({e})")
+                except Exception:
                     for ev in reversed(read_events(channel)):
                         push_log(ev)
 
