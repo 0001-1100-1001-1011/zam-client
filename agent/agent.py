@@ -18,16 +18,53 @@ import hmac
 import winreg
 import ssl
 
-HMAC_KEY_FILE = Path(r"C:\Zam-Projekt\zam-client\agent\agent.key")
+AGENT_KEY = Path(r"C:\Zam-Projekt\zam-client\agent\agent.key")
 
-def load_hmac_key():
+QUEUE_FILE = Path(__file__).parent / "event_queue.json"
+
+def load_queue():
+    if not QUEUE_FILE.exists():
+        return []
     try:
-        key_hex = HMAC_KEY_FILE.read_text().strip()
+        return json.loads(QUEUE_FILE.read_text())
+    except:
+        return []
+
+def save_queue(queue):
+    tmp = QUEUE_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(queue, indent=2))
+    tmp.replace(QUEUE_FILE)
+
+def add_to_queue(event):
+    queue = load_queue()
+    queue.append(event)
+    save_queue(queue)
+
+def send_queue():
+    queue = load_queue()
+    if not queue:
+        return
+
+    print(f"[Queue] {len(queue)} gespeicherte Events gefunden.")
+
+    remaining = []
+    for ev in queue:
+        if push_log(ev):
+            ts = ev["time_created"][11:19]
+            print(f"[Queue] [{ts}] {ev['level']} {ev['source']} EventId:{ev['event_id']}")
+        else:
+            remaining.append(ev)
+
+    save_queue(remaining)
+
+def load_key():
+    try:
+        key_hex = AGENT_KEY.read_text().strip()
         return bytes.fromhex(key_hex)
     except Exception:
         return None
 
-SECRET = load_hmac_key()
+SECRET = load_key()
 
 SERVER_URL   = "https://10.72.100.25/agent-api/logs"
 SOFTWARE_URL = "https://10.72.100.25/agent-api/softwares"
@@ -35,7 +72,7 @@ HOSTS_URL    = "https://10.72.100.25/agent-api/hosts"
 
 INTERVAL_SEC    = 10
 INITIAL_LOGS    = 5
-MAX_LOGS        = 100
+MAX_LOGS        = 500
 
 Last_RecordFile = Path(__file__).parent / "last_record.json"
 
@@ -221,10 +258,10 @@ def get_hardware_info():
 
     try:
         result = subprocess.run(
-            ["wmic", "cpu", "get", "name"],
+            ["powershell", "-Command", "(Get-CimInstance Win32_Processor).Name"],
             capture_output=True, text=True, timeout=5, creationflags=subprocess.CREATE_NO_WINDOW
         )
-        lines = [l.strip() for l in result.stdout.splitlines() if l.strip() and l.strip() != "Name"]
+        lines = [l.strip() for l in result.stdout.splitlines() if l.strip()]
         info["cpu_model"] = lines[0] if lines else platform.processor()
     except Exception:
         pass
@@ -248,10 +285,10 @@ def get_hardware_info():
 def get_gpu_name():
     try:
         result = subprocess.run(
-            ["wmic", "path", "win32_VideoController", "get", "name"],
+            ["powershell", "-Command", "(Get-CimInstance Win32_VideoController).Name"],
             capture_output=True, text=True, timeout=5, creationflags=subprocess.CREATE_NO_WINDOW
         )
-        lines = [l.strip() for l in result.stdout.splitlines() if l.strip() and l.strip() != "Name"]
+        lines = [l.strip() for l in result.stdout.splitlines() if l.strip()]
 
         FAKE_GPUS = ["virtual", "basic", "microsoft", "vmware", "display", "remote"]
 
@@ -334,6 +371,7 @@ def main():
 
     load_state()
 
+    send_queue()
     try:
         already_initialized = any(v is not None for v in last_record.values())
 
@@ -342,7 +380,8 @@ def main():
             for channel in CHANNELS:
                 print(f"  {channel}: fortgesetzt ab Record #{last_record[channel]}")
                 for ev in reversed(read_events(channel)):
-                    push_log(ev)
+                    if not push_log(ev):
+                        add_to_queue(ev)
             save_state()
         else:
             print("Starte Log-Lesen")
@@ -354,7 +393,10 @@ def main():
                     win32evtlog.CloseEventLog(handle)
 
                     for ev in reversed(raw[:INITIAL_LOGS]):
-                        push_log(event_to_dict(ev, channel))
+                        ev_dict = event_to_dict(ev, channel)
+                        if not push_log(ev_dict):
+                            add_to_queue(ev_dict)
+                        time.sleep(0.05)
 
                     if raw:
                         last_record[channel] = raw[0].RecordNumber
@@ -362,15 +404,21 @@ def main():
                         print(f"  {channel}: Start bei Record #{last_record[channel]}")
                 except Exception:
                     for ev in reversed(read_events(channel)):
-                        push_log(ev)
+                        if not push_log(ev):
+                            add_to_queue(ev)
+                        time.sleep(0.05)
+        
+        queue_software()
+        time.sleep(0.2)
+        send_software_queue()
+        time.sleep(0.2)
 
-        push_software()
         push_hosts()
-
+        time.sleep(0.2)
     except KeyboardInterrupt:
         print("\n[Agent gestoppt]")
 
 if __name__ == "__main__":
-    while True:
+    #while True:
         main()
-        time.sleep(INTERVAL_SEC)
+     #   time.sleep(INTERVAL_SEC) only without Taskscheduler
