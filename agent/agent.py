@@ -407,6 +407,14 @@ def main():
                         if not push_log(ev):
                             add_to_queue(ev)
                         time.sleep(0.05)
+        
+        queue_software()
+        time.sleep(0.2)
+        send_software_queue()
+        time.sleep(0.2)
+
+        push_hosts()
+        time.sleep(0.2)
     except KeyboardInterrupt:
         print("\n[Agent gestoppt]")
 
